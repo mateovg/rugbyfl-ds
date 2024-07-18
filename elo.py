@@ -1,16 +1,45 @@
 # functions to calculate each part of the elo formula
-
+from dataclasses import dataclass
+import datetime
 from pandas import DataFrame
 
 
-class Elo:
+@dataclass
+class Match:
+    Game_ID: int
+    Championship_ID: int
+    Team_ID: int
+    Team_Name: str
+    Team_Score: int
+    Opponent_ID: int
+    Opponent_Name: str
+    Opponent_Score: int
+    Game_Date: datetime
+    Season: int
+    Is_Home: bool
+    Team_ELO: int
+    ELO_Change: int
+    Opponent_ELO: int
+
+
+class EloCalculator:
     def __init__(self, df: DataFrame, k_factor=20, home_advantage=100, starting_elo=1505):
-        self.df = df  # dataframe with all the games
+        self.df = df.copy()  # dataframe with all the games
         self.elo_dict = {}  # dictionary with team names as keys and elo ratings as values
         self.k_factor = k_factor
         self.home_advantage = home_advantage
         self.starting_elo = starting_elo
         self.init_elo_dict()
+
+    def get_df(self):
+        return self.df.copy()
+
+    def print_elo_changes(self, team_name):
+        team_df = (self.df[self.df['Team_Name'] ==
+                           team_name])
+        for index, row in team_df.iterrows():
+            print(
+                f"{row['Game_Date']} - {row['Team_Name']} vs {row['Opponent_Name']}: {row['ELO_Change']}, ELO: {row['Team_ELO']}")
 
     def find_elo_ratings_season(self, season: int):
         season_df = self.df[self.df['Season'] == season]
@@ -18,47 +47,73 @@ class Elo:
 
         for game_id in games:
             home_row = season_df[(season_df['Game_ID'] == game_id) & (
-                season_df['Is_Home'] == 1)]
+                season_df['Is_Home'] == True)]
             away_row = season_df[(season_df['Game_ID'] == game_id) & (
-                season_df['Is_Home'] == 0)]
+                season_df['Is_Home'] == False)]
 
-            home_team = home_row['Team_Name']
-            away_team = away_row['Opponent_Name']
+            home_team = home_row.iloc[0]['Team_Name']
+            away_team = away_row.iloc[0]['Team_Name']
 
-            margin_of_victory = home_row['Team_Score'] - away_row['Team_Score']
+            home_elo = self.elo_dict.get(home_team, 1505)
+            away_elo = self.elo_dict.get(away_team, 1505)
+
+            if home_elo > 1800:
+                print(f"{game_id} - {home_team} has an elo of {home_elo}")
+            if away_elo > 1800:
+                print(f"{game_id} - {away_team} has an elo of {away_elo}")
+
+            if home_team in ["Out of State", "Miami Sharks"]:
+                home_elo = away_elo
+            if away_team in ["Out of State", "Miami Sharks"]:
+                away_elo = home_elo + self.home_advantage
+
+            # Update DataFrame with current Elo ratings
+            self.df.loc[home_row.index, 'Team_ELO'] = home_elo
+            self.df.loc[away_row.index, 'Team_ELO'] = away_elo
+            self.df.loc[away_row.index, 'Opponent_ELO'] = home_elo
+            self.df.loc[home_row.index, 'Opponent_ELO'] = away_elo
+
+            home_score = home_row.iloc[0]['Team_Score']
+            away_score = away_row.iloc[0]['Team_Score']
+
+            margin_of_victory = home_score - away_score
 
             home_elo_change, away_elo_change = self.find_elo_change(
-                home_team, away_team, margin_of_victory)
+                home_elo, away_elo, margin_of_victory)
 
-            # Update rows with new elo ratings
+            # Update elo_dict with new elo ratings
+            self.elo_dict[home_team] = home_elo + home_elo_change
+            self.elo_dict[away_team] = away_elo + away_elo_change
 
-            self.elo_dict[away_team] += away_elo_change
-            self.elo_dict[home_team] += home_elo_change
+            # Update DataFrame with Elo changes
+            self.df.loc[home_row.index, 'ELO_Change'] = home_elo_change
+            self.df.loc[away_row.index, 'ELO_Change'] = away_elo_change
 
     def init_elo_dict(self):
         teams = self.df['Team_Name'].unique()
         for team in teams:
-            self.elo_dict[team] = self.starting_elo
+            if team not in self.elo_dict:
+                self.elo_dict[team] = self.starting_elo
 
-    def find_elo_ratings_season_decay(self, season: DataFrame, elo_dict: dict):
-        for team in elo_dict:
-            elo_dict[team] = self.find_decay_elo(elo_dict[team])
-        return elo_dict
+    def decay_season_ratings(self):
+        """
+        Decay the elo ratings by 25% to the mean, set at 1505 to account for
+        changes in the off season.
+        """
+        for team in self.elo_dict:
+            self.elo_dict[team] = self.find_decay_elo(self.elo_dict[team])
 
-    def find_elo_change(self, home_team: str, away_team: str, margin_of_victory: int):
-        elo_home = self.elo_dict[home_team]
-        elo_away = self.elo_dict[away_team]
-
-        elo_diff = elo_home - elo_away
+    def find_elo_change(self, home_elo: int, away_elo: int, margin_of_victory: int) -> tuple[int, int]:
+        elo_diff = home_elo - away_elo
 
         K_home, K_away = self.find_K(margin_of_victory, elo_diff)
         S_home, S_away = self.find_S(margin_of_victory)
-        E_home, E_away = self.find_E(elo_home, elo_away)
+        E_home, E_away = self.find_E(home_elo, away_elo)
 
-        elo_home = K_home * (S_home - E_home)
-        elo_away = K_away * (S_away - E_away)
+        home_elo = K_home * (S_home - E_home)
+        away_elo = K_away * (S_away - E_away)
 
-        return int(elo_home), int(elo_away)
+        return int(home_elo), int(away_elo)
 
     def find_K(self, margin_of_victory: int, elo_diff: int) -> int:
         # K is multiplier to apply to the elo change
@@ -94,6 +149,6 @@ class Elo:
     def find_decay_elo(self, elo: int) -> int:
         """
         Decay the elo rating by 25% to the mean, set at 1505 to account for
-        new teams joining. 
+        new teams joining.
         """
         return int(elo * 0.75 + 1505 * 0.25)
