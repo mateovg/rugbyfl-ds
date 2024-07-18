@@ -13,7 +13,7 @@ class Elo:
         self.init_elo_dict()
 
     def find_elo_ratings_season(self, season: int):
-        season_df = self.df[self.df['Season'] == season].copy()
+        season_df = self.df[self.df['Season'] == season]
         games = season_df['Game_ID'].unique()
 
         for game_id in games:
@@ -34,8 +34,6 @@ class Elo:
 
             self.elo_dict[away_team] += away_elo_change
             self.elo_dict[home_team] += home_elo_change
-
-        return season
 
     def init_elo_dict(self):
         teams = self.df['Team_Name'].unique()
